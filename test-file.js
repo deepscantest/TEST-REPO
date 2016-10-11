@@ -19,7 +19,6 @@
 var cluster = require('cluster');
 var numCPUs = require('os').cpus().length;
 var mod = require('./common/mod');
-var mod = a;
 
 class App  {
     constructor() {
@@ -163,12 +162,9 @@ function gracefulExit() {
 process.on('SIGINT', function () {
     logger.info('gracefully shutting down from SIGINT (Crtl-C)');
     gracefulExit();
-});
+})
 
 process.on('SIGTERM', function () {
     logger.info('gracefully shutting down from SIGTERM');
     gracefulExit();
 });
-
-
-test code
