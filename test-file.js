@@ -15,6 +15,7 @@
  */
 
 'use strict';
+2
 
 var cluster = require('cluster');
 var numCPUs = require('os').cpus().length;
