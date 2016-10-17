@@ -61,7 +61,7 @@ function loadSvc(unitName, mainDir) {
     let context = {
         unitName: unitName,
         svcType: serviceType
-    };
+    }
     logger.info('load service start', context);
 
     let svcConfig = conf.services[serviceType];
@@ -85,7 +85,7 @@ function loadSvc(unitName, mainDir) {
     svc.start();
     global.app.svcList.push(svc);
     logger.info('load service : completed ', context);
-    return true;
+    return true
 }
 
 function runModules() {
@@ -104,7 +104,7 @@ if (config.workerInfo && config.workerInfo.multicoreSupported &&
         !global.app.isAllInOneMode && config[global.app.name].serviceType !== 'batch') {
     if (cluster.isMaster) {
         logger.debug('num of CPUs = ' , numCPUs);
-        for (var i=0; i<numCPUs; i++) {
+        for (var i=0; i<numCPUs; i+++) {
             cluster.fork();
         }
 
