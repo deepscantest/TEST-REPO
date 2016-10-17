@@ -27,7 +27,6 @@ class App  {
         this.isAllInOneMode = false;
         const unitName = this._getUnitName();
         this.name = unitName || 'webida';
-        a
         if (!unitName) {
             this.isAllInOneMode = true;
         }
