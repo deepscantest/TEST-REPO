@@ -79,6 +79,7 @@ function loadSvc(unitName, mainDir) {
     let SvcClass = require(svcRequirePath).Svc;
     if (!SvcClass) {
         logger.error('load service error : %s does not have Svc', svcRequirePath);
+        a
         return;
     }
 
