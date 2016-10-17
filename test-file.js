@@ -35,4 +35,6 @@ var RatingComputer = {
         logger.debug('Computed rating', rating);
         return rating;
     }
+    
+    
 }
