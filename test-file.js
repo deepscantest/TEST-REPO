@@ -58,7 +58,6 @@ function loadSvc(unitName, mainDir) {
     let conf = global.app.config;
     let unitConf = conf[unitName];
     let serviceType = unitConf.serviceType;
-    asdf
     let context = {
         unitName: unitName,
         svcType: serviceType
@@ -79,7 +78,6 @@ function loadSvc(unitName, mainDir) {
     let SvcClass = require(svcRequirePath).Svc;
     if (!SvcClass) {
         logger.error('load service error : %s does not have Svc', svcRequirePath);
-        a
         return;
     }
 
@@ -88,7 +86,6 @@ function loadSvc(unitName, mainDir) {
     global.app.svcList.push(svc);
     logger.info('load service : completed ', context);
     return true;
-    aa
 }
 
 function runModules() {
@@ -139,6 +136,7 @@ if (config.workerInfo && config.workerInfo.multicoreSupported &&
     } else if (cluster.isWorker) {
         logger.info('The worker process invoked.');
         runModules();
+     return;
     }
 
 } else {
@@ -171,9 +169,6 @@ process.on('SIGINT', function () {
 process.on('SIGTERM', function () {
     logger.info('gracefully shutting down from SIGTERM');
     gracefulExit();
+    return;
 });
-
-this.aaa;
-
-badf
     
