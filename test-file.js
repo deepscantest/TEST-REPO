@@ -60,7 +60,7 @@ function loadSvc(unitName, mainDir) {
     let serviceType = unitConf.serviceType;
     let context = {
         unitName: unitName,
-        svcType: serviceType
+        svcType: serviceType 
     }
     logger.info('load service start', context);
 
