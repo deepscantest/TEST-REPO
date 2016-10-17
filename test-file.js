@@ -53,7 +53,7 @@ let logger = loggerFactory.getLogger();
 let config = require('./common/conf-manager').conf;
 global.app.config =  config;
 
-
+ 
 function loadSvc(unitName, mainDir) {
     let conf = global.app.config;
     let unitConf = conf[unitName];
