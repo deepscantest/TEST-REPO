@@ -27,6 +27,7 @@ class App  {
         this.isAllInOneMode = false;
         const unitName = this._getUnitName();
         this.name = unitName || 'webida';
+        a
         if (!unitName) {
             this.isAllInOneMode = true;
         }
@@ -58,6 +59,7 @@ function loadSvc(unitName, mainDir) {
     let conf = global.app.config;
     let unitConf = conf[unitName];
     let serviceType = unitConf.serviceType;
+    asdf
     let context = {
         unitName: unitName,
         svcType: serviceType
@@ -86,6 +88,7 @@ function loadSvc(unitName, mainDir) {
     global.app.svcList.push(svc);
     logger.info('load service : completed ', context);
     return true;
+    aa
 }
 
 function runModules() {
