@@ -165,6 +165,7 @@ function gracefulExit() {
 process.on('SIGINT', function () {
     logger.info('gracefully shutting down from SIGINT (Crtl-C)');
     gracefulExit();
+ 
 });
 
 process.on('SIGTERM', function () {
