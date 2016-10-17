@@ -1,1 +1,1 @@
-asfasdf
+var a = 'a';
