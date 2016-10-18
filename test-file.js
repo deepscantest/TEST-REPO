@@ -1,6 +1,4 @@
-// GitHub Webhook for push event
-// After receiving the push event, auto analysis for the branch will start. 
-// TODO: Process for pull request
+
 mainRouter['post']('/api/webhook/github', function (req, res, next) {
     var headers = req.headers;
     var body = req.body;
