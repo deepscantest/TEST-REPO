@@ -1,10 +1,4 @@
 
-
-var level = {
-    poor : { name: 'POOR', high_medium_impact_threshold: '1', low_impact_threshold: '10'},
-    normal : { name: 'NORMAL', high_medium_impact_threshold: '1', low_impact_threshold: '10'},
-    good : { name: 'GOOD', high_medium_impact_threshold: '1', low_impact_threshold: '5'}
-};
     
     //Grade
 var ratingComputer = {
