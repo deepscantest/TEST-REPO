@@ -1,3 +1,3 @@
 
 var a;
-c
+var c = a;
