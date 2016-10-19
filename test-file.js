@@ -389,6 +389,7 @@ function updateGrade(allDefects, analysis) {
         return defect.status === constants.LITE_DEFECT_STATUS_NEW || defect.status === constants.LITE_DEFECT_STATUS_TRIAGED;
     });
 
+    logger.debug('$$$$$$$$$ analysis: ' , analysis);
     // get LOC
     var fileSizeArr = _.map(analysis.files, function (file) {
         return file.loc;
