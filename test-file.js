@@ -42,7 +42,7 @@ var dbLiteRule = jsaDao.dbLiteRule;
 var engineIdMap = {};
 
 //Grade
-var ratingComputer = {
+var gradeComputer = {
     // name : grade label
     // thresholdHighMedium : value of high medium impact threshold
     // thresholdLow : value of low impact threshold value
@@ -82,7 +82,7 @@ var ratingComputer = {
             return '';
         }
 
-        var rating = '';
+        var grade = '';
         var impactCount = this._getImpactCount(defects);
 
         var highDensity = this._density(impactCount.High, loc);
@@ -90,20 +90,20 @@ var ratingComputer = {
         var lowDensity = this._density(impactCount.Low, loc);
 
         if (highDensity >= this.level.poor.thresholdHighMedium || mediumDensity >= this.level.poor.thresholdHighMedium || lowDensity >= this.level.poor.thresholdLow) {
-            rating = this.level.poor.name;
+            grade = this.level.poor.name;
         }else {
             if (lowDensity < this.level.good.thresholdLow) {
-                rating = this.level.good.name;
+                grade = this.level.good.name;
             } else if (lowDensity < this.level.normal.thresholdLow) {
-                rating = this.level.normal.name;
+                grade = this.level.normal.name;
             }
         }
 
         logger.debug('lines of code: ', loc);
         logger.debug('density - high: ', highDensity, '    medium: ', mediumDensity, '    low: ', lowDensity);
-        logger.debug('Computed rating', rating);
+        logger.debug('Computed grade', grade);
 
-        return rating;
+        return grade;
     }
 };
 
@@ -396,22 +396,14 @@ function updateGrade(allDefects, analysis) {
     var fileSizeArr = _.map(analysis.files, function (file) { return parseInt(file.loc); });
     var loc = _.reduce(fileSizeArr, function (memo, size) { return (memo + size); }, 0);
 
-    var rating = ratingComputer.compute(defects, loc);
+    var grade = gradeComputer.compute(defects, loc);
     
-    //test badge
-    var badge = require('gh-badges');
-    badge({ text: [ "build", rating ], colorscheme: "green" },
-          function(svg) {
-        // svg is a String… of your badge.
-        logger.debug(' badge: ', svg);
-    });
-
     // update branch DB
     var branchId = analysis.ownerBid;
     return dbLiteBranch.$updateAsync({
         bid: branchId,
         $set: {
-            grade: rating
+            grade: grade
         }
     });
 }
@@ -544,7 +536,7 @@ function startEngine(analysisInfo) {
                                 // 최종 defects DB에 업데이트
                                 return updateDefectsAfterMerging(defects)
                                     .then(function () {
-                                        // grade update
+                                    // grade 계산 및 brranch DB에 업데이트
                                         return updateGrade(defects, analysis);
                                     });
                             });
