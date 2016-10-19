@@ -75,6 +75,7 @@ var ratingComputer = {
     compute: function (defects, loc) {
         // 분석된 내용이 없으면 empty string을 반환
         if (!loc) {
+            logger.debug('LOC is zero');
             return '';
         }
 
@@ -392,9 +393,12 @@ function updateGrade(allDefects, analysis) {
     var fileSizeArr = _.map(analysis.files, function (file) {
         return file.loc;
     });
+    logger.debug(' file size arr: ' + fileSizeArr);
+    
     var loc = _.reduce(fileSizeArr, function (memo, size) {
         return memo + size
     }, 0);
+    logger.debug(' LOC: ' + loc);
     
     var rating = ratingComputer.compute(defects, loc);
 
