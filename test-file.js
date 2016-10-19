@@ -391,15 +391,8 @@ function updateGrade(allDefects, analysis) {
 
     logger.debug('$$$$$$$$$ analysis: ' , analysis);
     // get LOC
-    var fileSizeArr = _.map(analysis.files, function (file) {
-        return parseInt(file.loc);
-    });
-    logger.debug(' file size arr: ' + fileSizeArr);
-    
-    var loc = _.reduce(fileSizeArr, function (memo, size) {
-        return memo + size
-    }, 0);
-    logger.debug(' LOC: ' + loc);
+    var fileSizeArr = _.map(analysis.files, function (file) { return parseInt(file.loc); });
+    var loc = _.reduce(fileSizeArr, function (memo, size) { return (memo + size); }, 0);
     
     var rating = ratingComputer.compute(defects, loc);
 
