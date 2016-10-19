@@ -43,10 +43,13 @@ var engineIdMap = {};
 
 //Grade
 var ratingComputer = {
+    // name : grade label
+    // thresholdHighMedium : value of high medium impact threshold
+    // thresholdLow : value of low impact threshold value
     level : {
-        poor : { name: constants.LITE_GRADE_POOR, high_medium_impact_threshold: '1', low_impact_threshold: '10'},
-        normal : { name: constants.LITE_GRADE_NORMAL, high_medium_impact_threshold: '1', low_impact_threshold: '10'},
-        good : { name: constants.LITE_GRADE_GOOD, high_medium_impact_threshold: '1', low_impact_threshold: '5'}
+        poor : { name: constants.LITE_GRADE_POOR, thresholdHighMedium: '1', thresholdLow: '10'},
+        normal : { name: constants.LITE_GRADE_NORMAL, thresholdHighMedium: '1', thresholdLow: '10'},
+        good : { name: constants.LITE_GRADE_GOOD, thresholdHighMedium: '1', thresholdLow: '5'}
     },
 
     _density: function (count, loc) {
@@ -86,12 +89,12 @@ var ratingComputer = {
         var mediumDensity = this._density(impactCount.Medium, loc);
         var lowDensity = this._density(impactCount.Low, loc);
 
-        if (highDensity >= this.level.poor.high_medium_impact_threshold || mediumDensity >= this.level.poor.high_medium_impact_threshold || lowDensity >= this.level.poor.low_impact_threshold) {
+        if (highDensity >= this.level.poor.thresholdHighMedium || mediumDensity >= this.level.poor.thresholdHighMedium || lowDensity >= this.level.poor.thresholdLow) {
             rating = this.level.poor.name;
         }else {
-            if (lowDensity < this.level.good.low_impact_threshold) {
+            if (lowDensity < this.level.good.thresholdLow) {
                 rating = this.level.good.name;
-            } else if (lowDensity < this.level.normal.low_impact_threshold) {
+            } else if (lowDensity < this.level.normal.thresholdLow) {
                 rating = this.level.normal.name;
             }
         }
