@@ -400,7 +400,7 @@ function updateGrade(allDefects, analysis) {
 
     //test badge
     var badge = require('gh-badges');
-    badge({ text: [ "build", grade ], colorscheme: "green", template: "flat" },
+    badge({ text: [ "Deepscan", grade ], colorscheme: "green", template: "flat" },
           function(svg) {
         // svg is a String… of your badge.
         logger.debug(' badge: ', svg);
