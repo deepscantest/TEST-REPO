@@ -101,7 +101,7 @@ var gradeComputer = {
 
         logger.debug('lines of code: ', loc);
         logger.debug('density - high: ', highDensity, '    medium: ', mediumDensity, '    low: ', lowDensity);
-        logger.debug('Computed grade', grade);
+        logger.debug('Computed grade: ', grade);
 
         return grade;
     }
@@ -397,7 +397,15 @@ function updateGrade(allDefects, analysis) {
     var loc = _.reduce(fileSizeArr, function (memo, size) { return (memo + size); }, 0);
 
     var grade = gradeComputer.compute(defects, loc);
-    
+
+    //test badge
+    var badge = require('gh-badges');
+    badge({ text: [ "build", rating ], colorscheme: "green", template: "flat" },
+          function(svg) {
+        // svg is a String… of your badge.
+        logger.debug(' badge: ', svg);
+    });
+
     // update branch DB
     var branchId = analysis.ownerBid;
     return dbLiteBranch.$updateAsync({
