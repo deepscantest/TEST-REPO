@@ -9,693 +9,732 @@
 
 'use strict';
 
+var targetId = 100000;
+var DEFAULT_TARGET_TIMEOUT = 20 * 60 * 1000; // 20 minutes
+
+var pendingList = [];
+var analyzingList = [];
+
 // node modules
-var _ = require('lodash');
-var fs = require('fs-extra');
+var _ = require('underscore');
+var fs = require('fs');
+var readline = require('readline');
 var path = require('path');
 var Promise = require('bluebird');
 
 // webida modules
-var conf = require('../../../common/conf-manager').conf;
-var fsMgr = require('../../../fs/lib/fs-manager');
-var logger = require('../../../common/logger-factory').getLogger('ANALYZER');
+var logger = require('../../../common/logger-factory').getLogger('ENGINE MANAGER');
 
 // jsa modules
-var constants = require('./constants');
-var engineMgr = require('./engine-manager');
-var hDefectMerger = require('./historical-defect-merger');
-var JsaGit = require('./jsa-git');
-var jsaReporter = require('./jsa-reporter');
+var Constants = require('./constants');
 
-var defectExcluder = require('../common/defect-excluder');
-var jsaDao = require('../common/jsa-dao');
 var JsaError = require('../common/jsa-error');
 
-var dbLiteProject = jsaDao.dbLiteProject;
-var dbLiteProjectSettings = jsaDao.dbLiteProjectSettings;
-var dbLiteBranch = jsaDao.dbLiteBranch;
-var dbLiteDefect = jsaDao.dbLiteDefect;
-var dbLiteAnalysis = jsaDao.dbLiteAnalysis;
-var dbLiteAlarm = jsaDao.dbLiteAlarm;
-var dbLiteRule = jsaDao.dbLiteRule;
+var OPTION_ANALYSIS_TIMEOUT = '-analysis-timeout';
+var OPTION_ANALYZE_RULE = '-rules';
+var OPTION_BROWSER = '-browser';
 
-var engineIdMap = {};
+var ENGINE_OUTPUT_FILE_INFO = '# File: ';
 
-//Grade
-var gradeComputer = {
-    // name : grade label
-    // thresholdHighMedium : value of high medium impact threshold
-    // thresholdLow : value of low impact threshold value
-    level : {
-        poor : { name: constants.LITE_GRADE_POOR, thresholdHighMedium: '1', thresholdLow: '10'},
-        normal : { name: constants.LITE_GRADE_NORMAL, thresholdHighMedium: '1', thresholdLow: '10'},
-        good : { name: constants.LITE_GRADE_GOOD, thresholdHighMedium: '1', thresholdLow: '5'}
-    },
+var ENGINE_OUTPUT_TIME_OUT = '* Timeout occurred during type analysis:';
+var ENGINE_OUTPUT_TOTAL_TIME = '# Total time(s):';
 
-    _density: function (count, loc) {
-        if (count) {
-            return (count / loc) * 1000;
-        } else {
-            return 0;
-        }
-    },
+var DEFECT_CODE_MAX_SIZE = 2000;
+var DEFECT_CODE_EXTRA_SIZE = 300;
+var DEFECT_CODE_ELLIPSIS = '...';
+var ANALYSIS_MAX_SIZE = 4;
 
-    // impact 종류별 카운팅: High, Medium, Low, Others
-    _getImpactCount: function (defects) {
-        return _.countBy(defects, function (defect) {
-            if (defect.impact == constants.DEFECT_IMPACTS[0]) {
-                return constants.DEFECT_IMPACTS[0];
-            } else if (defect.impact == constants.DEFECT_IMPACTS[1]) {
-                return constants.DEFECT_IMPACTS[1];
-            } else if (defect.impact == constants.DEFECT_IMPACTS[2]) {
-                return constants.DEFECT_IMPACTS[2];
-            } else {
-                return 'Others';
-            }
-        });
-    },
+var Options = {
+    RULES: 'rules',
+    BROWSERS: 'browsers'
+};
 
-    compute: function (defects, loc) {
-        // 분석된 내용이 없으면 empty string을 반환
-        if (!loc) {
-            logger.debug('LOC is zero');
+var analyzingProcessIds = [];
+
+function canStartAnalysis() {
+    if (analyzingList.length < ANALYSIS_MAX_SIZE) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+function getUniqueTargetId() {
+    return targetId++;
+}
+
+function getStartIndexOfPath(text) {
+    var index = text.lastIndexOf('(');
+    var str = text.substring(index);
+    var splitStr;
+    var length;
+
+    text = text.substring(0, index);
+    splitStr = str.split(')');
+    length = splitStr.length;
+
+    if (length === 2) {
+        return index;
+    }
+
+    for (var i = length; i > 2; i--) {
+        index = text.lastIndexOf('(');
+        text = text.substring(0, index);
+    }
+
+    return index;
+}
+
+function generateAnalysisResult(analysisTarget) {
+    var analysisResult = {
+        id: analysisTarget.id,
+        path: analysisTarget.path,
+        status: analysisTarget.status,
+        typeAnalysisStatus: analysisTarget.typeAnalysisStatus,
+        startTime: analysisTarget.startTime,
+        files: _.map(analysisTarget.files, _.clone),
+        alarms: _.map(analysisTarget.alarms, _.clone),
+    };
+
+    return analysisResult;
+}
+
+function getExtraCode(lines, line, column, extraSize, isPrev) {
+    var expandableLine = lines[line - 1];
+    var expandableLineLength = expandableLine.length;
+    if (isPrev) {
+        if (column === 1) {
             return '';
         }
 
-        var grade = '';
-        var impactCount = this._getImpactCount(defects);
+        if (column <= extraSize) {
+            return expandableLine.substring(0, column - 1);
+        }
 
-        var highDensity = this._density(impactCount.High, loc);
-        var mediumDensity = this._density(impactCount.Medium, loc);
-        var lowDensity = this._density(impactCount.Low, loc);
+        if (extraSize < column) {
+            return DEFECT_CODE_ELLIPSIS + expandableLine.substring(column - extraSize - 1, column - 1);
+        }
+    } else {
+        if (column === expandableLineLength + 1) {
+            return '';
+        }
 
-        if (highDensity >= this.level.poor.thresholdHighMedium || mediumDensity >= this.level.poor.thresholdHighMedium || lowDensity >= this.level.poor.thresholdLow) {
-            grade = this.level.poor.name;
-        }else {
-            if (lowDensity < this.level.good.thresholdLow) {
-                grade = this.level.good.name;
-            } else if (lowDensity < this.level.normal.thresholdLow) {
-                grade = this.level.normal.name;
+        if (column + extraSize < expandableLineLength + 1) {
+            return expandableLine.substring(column - 1, column + extraSize) + DEFECT_CODE_ELLIPSIS;
+        }
+
+        if (expandableLineLength + 1 <= column + extraSize) {
+            return expandableLine.substring(column - 1);
+        }
+    }
+    return '';
+}
+
+function generateDefectCode(lines, startLine, startColumn, endLine, endColumn) {
+    var defectCode = '';
+    var defectCodeLocation = {};
+    defectCodeLocation.start = {};
+    defectCodeLocation.start.line = 1;
+    defectCodeLocation.start.column = startColumn;
+    defectCodeLocation.end = {};
+    defectCodeLocation.end.line = endLine - startLine + 1;
+    defectCodeLocation.end.column = endColumn;
+
+    var isSingleLineDefect = false;
+
+    // 순수 defect code 계산
+    if (startLine === endLine) {
+        isSingleLineDefect = true;
+        defectCode = lines[startLine - 1].substring(startColumn - 1, endColumn - 1);
+    } else {
+        // 첫번째 라인
+        defectCode += lines[startLine - 1].substring(startColumn - 1, lines[startLine - 1].length);
+        defectCode += '\n';
+
+        // 가운데 라인들
+        if (endLine - startLine > 1) {
+            var defectMiddleLines = lines.slice(startLine, endLine - 1);
+            _.map(defectMiddleLines, function (line) {
+                defectCode += line + '\n';
+            });
+        }
+
+        // 마지막 라인
+        defectCode += lines[endLine - 1].substring(0, endColumn - 1);
+    }
+
+    if (DEFECT_CODE_MAX_SIZE < defectCode.length) {
+        // 순수 defect code가 DEFECT_CODE_MAX_SIZE 를 넘어선 경우
+        // prev ellipsis 추가 및 location 보정
+        var prevExtraCode = getExtraCode(lines, startLine, startColumn, 0, true);
+        defectCodeLocation.start.column = prevExtraCode.length + 1;
+        if (isSingleLineDefect) {
+            defectCodeLocation.end.column = defectCodeLocation.start.column + defectCode.length;
+        }
+        defectCode = prevExtraCode + defectCode;
+
+        // post ellipsis 추가
+        var postExtraCode = getExtraCode(lines, endLine, endColumn, 0, false);
+        defectCode += postExtraCode;
+    } else {
+        // 순수 defect code가 DEFECT_CODE_MAX_SIZE 보다 작은 경우
+        // prev extra code 와 ellipsis 추가 및 location 보정
+        var prevExtraCode = getExtraCode(lines, startLine, startColumn, DEFECT_CODE_EXTRA_SIZE, true);
+        defectCodeLocation.start.column = prevExtraCode.length + 1;
+        if (isSingleLineDefect) {
+            defectCodeLocation.end.column = defectCodeLocation.start.column + defectCode.length;
+        }
+        defectCode = prevExtraCode + defectCode;
+
+        // prev line 추가 및 location 보정
+        if (prevExtraCode.length <= DEFECT_CODE_EXTRA_SIZE && 1 < startLine) {
+            var prevLine = lines[startLine - 2];
+            if (defectCode.length + prevLine.length < DEFECT_CODE_MAX_SIZE) {
+                defectCode = prevLine + '\n' + defectCode;
+                defectCodeLocation.start.line += 1;
+                defectCodeLocation.end.line += 1;
             }
         }
 
-        logger.debug('lines of code: ', loc);
-        logger.debug('density - high: ', highDensity, '    medium: ', mediumDensity, '    low: ', lowDensity);
-        logger.debug('Computed grade: ', grade);
+        // post extra code 와 ellipsis 추가
+        var postExtraCode = getExtraCode(lines, endLine, endColumn, DEFECT_CODE_EXTRA_SIZE, false);
+        defectCode = defectCode + postExtraCode;
 
-        return grade;
-    }
-};
-
-function setAnalysisWorkspaceSettings(destPath) {
-    var srcPath = path.normalize(path.join(__dirname, './template/analysis-workspace-template/'));
-    fs.copy(srcPath, destPath, {
-        clobber: true
-    }, function (error) {
-        if (error) {
-            logger.error(error);
+        // post line 추가
+        if (postExtraCode.length <= DEFECT_CODE_EXTRA_SIZE && endLine < lines.length - 1) {
+            var postLine = lines[endLine];
+            if (defectCode.length + postLine.length < DEFECT_CODE_MAX_SIZE) {
+                defectCode = defectCode + '\n' + postLine;
+            }
         }
-    });
-}
-
-/**
- * analysis 객체를 획득
- *  analysis DB로부터 analysis id를 이용하여 analysis 객체를 얻어옴
- *
- * @param {string} analysis id
- * @return {object} promise - 성공 시 analysis 객체, 실패 시 error 메시지를 전달
- */
-function findAnalysis(analysisId) {
-    return dbLiteAnalysis.$findOneAsync({
-        aid: analysisId
-    }).then(function (context) {
-        var row = context.result();
-        if (row) {
-            return row;
-        } else {
-            throw new JsaError('Requested analysis (' + analysisId + ') does not exist.', 404);
-        }
-    }).catch(function (error) {
-        throw new JsaError(error);
-    });
-}
-
-
-/**
- * analysis DB를 update
- * @param {string} analysis id
- * @param {object} updateInfo - analysis를 update할 정보를 가지는 객체
- * @return {object} promise - 성공 시 DB update 성공 객체, 실패 시 error 메시지를 전달
- */
-function updateAnalysisInfo(analysisId, updateInfo) {
-    if (updateInfo.hasOwnProperty('files')) {
-        updateInfo.files = JSON.stringify(updateInfo.files);
     }
-    return dbLiteAnalysis.$updateAsync({
-        aid: analysisId,
-        $set: updateInfo
-    }).then(function (context) {
-        return context.result();
-    }).catch(function (error) {
-        throw new JsaError(error);
-    });
-}
 
-
-/**
- * disabled된 rule name 배열을 획득
- *  rule DB로부터 pid를 이용하여 rule name 배열을 얻어옴
- *
- * @param {string} pid 프로젝트 ID
- * @return {object} promise - 성공 시 rule name 배열, 실패 시 error 메시지를 전달
- */
-function getDisabledRuleNames(pid) {
-    return dbLiteRule.getDisabledRuleNamesAsync({
-        ownerPid: pid
-    }).then(function (context) {
-        var rows = context.result();
-        return _.compact(_.map(rows, function (row) {
-            return row.name;
-        }));
-    }).catch(function (error) {
-        throw new JsaError(error);
-    });
-}
-
-/**
- * enabled된 rule name 배열을 획득
- *  rule DB로부터 pid를 이용하여 rule name 배열을 얻어옴
- *
- * @param {string} pid 프로젝트 ID
- * @return {object} promise - 성공 시 rule name 배열, 실패 시 error 메시지를 전달
- */
-function getEnabledRuleNames(pid) {
-    return dbLiteRule.getEnabledRuleNamesAsync({
-        ownerPid: pid
-    }).then(function (context) {
-        var rows = context.result();
-        return _.compact(_.map(rows, function (row) {
-            return row.name;
-        }));
-    }).catch(function (error) {
-        throw new JsaError(error);
-    });
-}
-
-/**
- * 분석에 필요한 옵션들 정보 획득
- *  1. Rule 제외 정보
- *  2. 결함 파일 제외 정보
- *
- * @param {object} analysis - analysis 객체
- * @return {object} promise - 성공 시 분석 객체 및 옵션 정보를 담은 analysisInfo 객체, 실패 시 error 메시지를 전달
- */
-function getOptions(analysis) {
-    logger.debug('get project options of analysis' + analysis.aid);
-    var projectId = analysis.ownerPid;
-    var analysisInfo = {
-        analysis: analysis,
-        options: {}
+    return {
+        codeFragment: defectCode,
+        codeFragmentLocation: defectCodeLocation
     };
-
-    // get projectId
-    return dbLiteBranch.$findOneAsync({
-        bid: analysis.ownerBid
-    }).then(function (context) {
-        var branch = context.result();
-        analysisInfo.projectId = branch.ownerPid;
-        return dbLiteProjectSettings.$findOneAsync({
-            ownerPid: analysisInfo.projectId
-        });
-    }).then(function (context) {
-        var projectSettings = context.result();
-        if (projectSettings.ignoreFiles) {
-            projectSettings.ignoreFiles = JSON.parse(projectSettings.ignoreFiles);
-        }
-        analysisInfo.options.projectSettings = projectSettings;
-        return analysisInfo.projectId;
-    })
-    .then(getDisabledRuleNames)
-    .then(function (disabledRuleNames) {
-        analysisInfo.options.disabledRuleNames = disabledRuleNames;
-        return analysisInfo.projectId;
-    })
-    .then(getEnabledRuleNames)
-    .then(function (enabledRuleNames) {
-        analysisInfo.options.enabledRuleNames = enabledRuleNames;
-        return analysisInfo;
-    }).catch(function (err) {
-        logger.error('Cannot get project option of ' + analysis.aid);
-        throw new JsaError(err);
-    });
 }
 
-function findProject(branch) {
-    var projectId = branch.ownerPid;
-    return dbLiteProject.$findOneAsync({
-        pid: projectId
-    }).then(function (context) {
-        var row = context.result();
-        if (row) {
-            return row;
-        } else {
-            throw new JsaError('Cannot find project of ' + branch.bid);
+function readCodeFragment(fileCache, filePath, location) {
+    var startEnd = location.split('-');
+    var startLocation = startEnd[0];
+    var startLineColumn = startLocation.split(':');
+    var endLocation = startEnd[1];
+    var endLineColumn = endLocation.split(':');
+
+    var startLine = Number(startLineColumn[0]);
+    var startColumn = Number(startLineColumn[1]);
+    var endLine = Number(endLineColumn[0]);
+    var endColumn = Number(endLineColumn[1]);
+
+    var lines = fileCache[filePath];
+    if (!lines) {
+        var data;
+        try {
+            // TODO 성능 개선점 - 파일을 전부 읽지 않고 필요한 줄만 읽도록 수정 필요
+            data = fs.readFileSync(filePath, 'utf-8');
+        } catch (error) {
+            logger.warn(error);
+
+            return {
+                codeFragment: null,
+                codeFragmentLocation: null
+            };
         }
-    }).catch(function (err) {
-        logger.error('Cannot get project of ' + projectId);
-        throw new JsaError(err);
+        lines = data.split('\n');
+        fileCache[filePath] = lines;
+    }
+
+    return generateDefectCode(lines, startLine, startColumn, endLine, endColumn);
+}
+
+function getAlarmFromLinedLog(fileCache, linedLog, rootDirectoryPath) {
+    var impact;
+    var name;
+    var cause;
+    var file;
+    var location;
+    var step1Text;
+    var step2Text;
+    var step3Text;
+    var index;
+
+    // logger.debug('[linedLog]', linedLog);
+
+    if (linedLog.indexOf('[High]') === -1 && linedLog.indexOf('[Medium]') === -1 && linedLog.indexOf('[Low]') === -1) {
+        return null;
+    }
+
+    /*example :
+     *      linedLog === '[High][ACCESS_PROPERTY_OF_FALSY_VALUE] ie8, ie9 browsers do not support ['async'] property of ['HTMLScriptElement'] interface (js/index.html_1432.36.js:11:3-11:11)'
+     */
+
+    step1Text = linedLog.split('] ');
+
+    /*example :
+     *      step1Text[0] === '[High][ACCESS_PROPERTY_OF_FALSY_VALUE'
+     *      step1Text[1] === 'ie8, ie9 browsers do not support ['async''
+     *      step1Text[2] === 'property of ['HTMLScriptElement'''
+     *      step1Text[3] === 'interface (js/index.html_1432.36.js:11:3-11:11)''
+     */
+
+    //parse impact
+    impact = step1Text[0].split('[')[1].split(']')[0];
+
+    /*example :
+     *      impact === 'High' || 'Medium' || 'Low'
+     */
+
+    //parse name
+    name = step1Text[0].split('[')[2];
+
+    /*example :
+     *      name === 'ACCESS_PROPERTY_OF_FALSY_VALUE'
+     */
+
+    //parse cause
+    step2Text = linedLog.substring(linedLog.indexOf('] ') + 2);
+
+    /*example :
+     *      cause에 '] '가 있는 경우가 있으므로 step1Text[1]을 바로 쓰지 않고 step2Text를 새로 만듦
+     *      step2Text === 'ie8, ie9 browsers do not support ['async'] property of ['HTMLScriptElement'] interface (js/index.html_1432.36.js:11:3-11:11)'
+     *      step2Text === 'document.form1 is undefined (@eval(6):1:1-1:15)' //파일이름안에 '(' ')'가 포함된 경우가 있어 getStartIndexOfPath를 통해 시작 '(' index를 계산
+     */
+
+    index = getStartIndexOfPath(step2Text);
+    cause = step2Text.substring(0, index);
+
+    /*example :
+     *      cause === 'ie8, ie9 browsers do not support ['async'] property of ['HTMLScriptElement'] interface '
+     *      cause === 'document.form1 is undefined '
+     */
+
+    step3Text = step2Text.substring(index + 1);
+
+    /*example :
+     *      step3Text === 'js/index.html_1432.36.js:11:3-11:11)'
+     */
+
+    //parse file
+    index = step3Text.indexOf(':');
+    file = step3Text.substring(0, index);
+
+    /*example :
+     *      file === 'js/index.html_1432.36.js'
+     */
+
+    //parse location
+    location = step3Text.substring(index + 1, step3Text.length - 1);
+
+    /*example :
+     *      location === '11:3-11:11'
+     */
+
+    var filePath = path.join(rootDirectoryPath, file);
+    var codeFragment = readCodeFragment(fileCache, filePath, location);
+
+    return {
+        impact: impact,
+        name: name,
+        message: cause,
+        filePath: file,
+        location: location,
+        codeFragment: codeFragment.codeFragment,
+        codeFragmentLocation: codeFragment.codeFragmentLocation
+    };
+}
+
+function createAnalysisCommand(analysisTarget) {
+    // -20 option : nice command param for low cpu priority
+    var analysisCmd = ['-20', 'bugda', 'analyze', analysisTarget.path, '-no-verbose-iteration'];
+
+    // -rules 옵션 처리
+    analysisCmd.push(OPTION_ANALYZE_RULE);
+    analysisCmd.push(analysisTarget.option[Options.RULES].join(' '));
+
+    // -browser 옵션 처리
+    // null 인 경우 모든 브라우저 검사를 해야 하므로, 엔진에 아무런 옵션을 주지 않는다
+    if (analysisTarget.option[Options.BROWSERS] !== null) {
+        analysisCmd.push(OPTION_BROWSER);
+        if (analysisTarget.option[Options.BROWSERS].length > 0) {
+            analysisCmd.push(analysisTarget.option[Options.BROWSERS].join(' '));
+        } else {
+            analysisCmd.push('');
+        }
+    }
+
+    return analysisCmd;
+}
+
+function createLiteAnalysisCommand(analysisTarget) {
+    // -20 option : nice command param for low cpu priority
+    var analysisCmd = ['-20', 'bugda', 'lite', analysisTarget.path];
+
+    // -rules 옵션 처리
+    analysisCmd.push(OPTION_ANALYZE_RULE);
+    analysisCmd.push(analysisTarget.option[Options.RULES].join(' '));
+
+    return analysisCmd;
+}
+
+// 분석을 마무리.
+function finishingAnalysis(analysisTarget) {
+    var err = null;
+
+    // 엔진 TIMEOUT
+    if (analysisTarget.typeAnalysisStatus !== Constants.LITE_STATUS_TIMEOUT) {
+        analysisTarget.typeAnalysisStatus = Constants.LITE_STATUS_SUCCESS;
+    }
+    // 정상 분석 종료
+    if (analysisTarget.status === Constants.LITE_STATUS_SUCCESS) {
+        err = null;
+    }
+    // 강제 분석 종료
+    else if (analysisTarget.status === Constants.LITE_STATUS_STOP) {
+        err = 'analysis stopped (ENGINE STOP)';
+    }
+    // 분석 TIMEOUT 종료
+    else if (analysisTarget.status === Constants.LITE_STATUS_TIMEOUT) {
+        err = 'analysis timeout (ENGINE TIMEOUT) : ' + analysisTarget.timeout + 'ms';
+    }
+    // 분석중 비정상 종료
+    else if (analysisTarget.status === Constants.LITE_STATUS_ANALYZING) {
+        err = 'analysis failed (ENGINE ERROR)';
+        analysisTarget.status = Constants.LITE_STATUS_FAIL;
+        analysisTarget.typeAnalysisStatus = Constants.LITE_STATUS_FAIL;
+    }
+    // 그 밖의 비정상 종료
+    else {
+        err = 'analysis failed (' + analysisTarget.status + ')';
+        analysisTarget.status = Constants.LITE_STATUS_FAIL;
+        analysisTarget.typeAnalysisStatus = Constants.LITE_STATUS_FAIL;
+    }
+    analysisTarget.doneCallback(err, generateAnalysisResult(analysisTarget));
+}
+
+function analyzePendingTarget() {
+    var analysisTarget, spawn, analyzingProcess, timeoutTimer;
+
+    if (pendingList.length <= 0) {
+        return;
+    }
+
+    if (canStartAnalysis() !== true) {
+        return;
+    }
+
+    analysisTarget = pendingList.shift();
+
+    analyzingList.push(analysisTarget);
+
+    spawn = require('child_process').spawn;
+    var command = createLiteAnalysisCommand(analysisTarget);
+    analyzingProcess = spawn('nice', command, {detached: true});
+    analyzingProcessIds.push(analyzingProcess.pid);
+
+    logger.debug('spawn(analyze) : ', command, ' pid :', analyzingProcess.pid);
+
+    if (!analysisTarget.timeout) {
+        analysisTarget.timeout = DEFAULT_TARGET_TIMEOUT;
+    }
+
+    analysisTarget.process = analyzingProcess;
+    analysisTarget.startTime = Date.now();
+    analysisTarget.status = Constants.LITE_STATUS_ANALYZING;
+    if (analysisTarget.startedCallback) {
+        analysisTarget.startedCallback(Constants.LITE_STATUS_ANALYZING);
+    }
+    logger.debug('analyzePendingTarget : ', analysisTarget.id, analysisTarget.status);
+
+    timeoutTimer = setTimeout(function () {
+        if (analysisTarget.status === Constants.LITE_STATUS_ANALYZING) {
+            logger.debug('timeout :', analysisTarget.path, ' pid :', analyzingProcess.pid);
+
+            analysisTarget.status = Constants.LITE_STATUS_TIMEOUT;
+            process.kill(-analyzingProcess.pid);
+        }
+    }, analysisTarget.timeout);
+
+    var targetPath = analysisTarget.path;
+    var rootDirectoryPath = targetPath;
+    var logPath = path.join(targetPath, 'bugda.log');
+    var logStream = fs.createWriteStream(logPath);
+    // defect code 구할때 동일 파일을 여러번 readFile(), split() 하지 않도록 caching
+    var fileCache = {};
+
+    analyzingProcess.stderr.pipe(logStream, {
+        end: false
+    });
+
+    analyzingProcess.stdout.pipe(logStream, {
+        end: false
+    });
+
+    readline.createInterface({
+        input: analyzingProcess.stdout,
+        terminal: true
+    }).on('line', function (linedLog) {
+        if (analysisTarget.status !== Constants.LITE_STATUS_ANALYZING) {
+            return;
+        }
+
+        var alarmInfo = getAlarmFromLinedLog(fileCache, linedLog, rootDirectoryPath);
+        if (alarmInfo !== null) {
+            analysisTarget.alarms.push(alarmInfo);
+        }
+
+        /*example
+             # File:   6955   3511  jindo2.js
+             # File:   1548   1071  underscore_test.js
+        **/
+        else if (linedLog.indexOf(ENGINE_OUTPUT_FILE_INFO) > -1) {
+            var tokens = linedLog.split(/[ ]+/g);
+            var file = {
+                name: tokens[4],
+                loc: tokens[3],
+                totalLines: tokens[2]
+            }
+            analysisTarget.files.push(file);
+        }
+
+        else if (linedLog.indexOf(ENGINE_OUTPUT_TIME_OUT) > -1) {
+            logger.debug('type analysis timeout', analysisTarget.path);
+            analysisTarget.typeAnalysisStatus = Constants.LITE_STATUS_TIMEOUT;
+        }
+
+        // 엔진에서 정상 종료일 때 # Total time(s): XX를 출력
+        else if (linedLog.indexOf(ENGINE_OUTPUT_TOTAL_TIME) > -1) {
+            analysisTarget.status = Constants.LITE_STATUS_SUCCESS;
+            logger.debug('analyzePendingTarget : ', analysisTarget.id, analysisTarget.status);
+        }
+    });
+
+    // 정상이나 child_process의 kill 또는 error disconnect등 프로세스 종료시에 close 이벤트가 호출 되므로 여기서 종료 처리
+    analyzingProcess.on('close', function (code, signal) {
+        clearTimeout(timeoutTimer);
+        logStream.close();
+
+        var index = analyzingProcessIds.indexOf(analyzingProcess.pid);
+        analyzingProcessIds.splice(index, 1);
+
+        finishingAnalysis(analysisTarget);
+
+        var index = analyzingList.indexOf(analysisTarget);
+        analyzingList.splice(index, 1);
+        logger.debug('analyzePendingTarget : analyze process closed ', analysisTarget.id, analysisTarget.status);
+
+        analyzePendingTarget();
+    });
+
+    // error나 disconnect시 exit은 호출되지 않는 경우가 있으므로 close에서 종료 처리
+    analyzingProcess.on('exit', function (code, signal) {
+        logger.debug('analyzePendingTarget : exit code(' + code + ') signal(' + signal + ')');
+    });
+
+    analyzingProcess.on('error', function (err) {
+        logger.error('analyzePendingTarget : ', err);
+        if (analysisTarget.status === Constants.LITE_STATUS_ANALYZING) {
+            analysisTarget.status = Constants.LITE_STATUS_FAIL;
+        }
+    });
+
+    analyzingProcess.on('disconnect', function () {
+        logger.error('analyzePendingTarget : analyze process disconnected');
+        if (analysisTarget.status === Constants.LITE_STATUS_ANALYZING) {
+            analysisTarget.status = Constants.LITE_STATUS_FAIL;
+        }
     });
 }
 
 /**
- * Git 소스를 clone 또는 pull
- * project object의 fsid와 pid를 이용하여 JsaGit을 생성.
- * JsaGit의 clone() 또는 pull() 호출
- * git 명령이 실패하면 분석 실패
- * @param {object} project object
+ * Starts analysis.
+ *
+ * @param {string} targetPath - 분석하려는 파일 패스
+ * @param {object} option - 분석에 사용할 옵션 객체
+ * @param {array} option.RULES - 분석에 사용할 룰 배열
+ * @param {function} startedCallback - 분석 시작 콜백
+ * @param {function} doneCallback - 분석 종료 결과 콜백
  */
-function fetchGitSource(branch, analysisInfo) {
-    var getFsinfo = Promise.promisify(fsMgr.getFsinfosByUid);
-    var analysis = analysisInfo.analysis;
-    var commitId = analysisInfo.commitId;
-    var jsaGit;
-    var project;
+function start(targetPath, option, startedCallback, doneCallback) {
+    var analysisTarget = {};
 
-    function updateGitRepo() {
-        logger.debug('update git : ', project.url, branch.name);
-        // git checkout & pull
-        return jsaGit.checkout(branch.name)
-            .bind(jsaGit)
-            .then(jsaGit.pull);
+    if (!doneCallback) {
+        logger.warn('must specifiy callback for receiving results of engine.');
+        return;
     }
 
-    function cloneGitRepo() {
-        logger.debug('colne git : ', project.url, branch.name);
-        return jsaGit.clone(project.url, branch.name);
+    if (!targetPath) {
+        logger.warn('must specifiy targetPath to analyze.');
+        return doneCallback('targetPath should not be empty');
     }
 
-    function checkoutGitRepo() {
-        logger.debug('checkout git : ', commitId);
-        return jsaGit.checkout(commitId);
-    }
+    analysisTarget.id = getUniqueTargetId();
+    analysisTarget.path = targetPath;
+    analysisTarget.option = option;
+    analysisTarget.files = [];
+    analysisTarget.alarms = [];
+    analysisTarget.status = Constants.LITE_STATUS_PENDING;
+    analysisTarget.doneCallback = doneCallback;
+    analysisTarget.startedCallback = startedCallback;
 
-    function removeAndCloneGitRepo() {
-        // remove git repo & clone
-        return jsaGit.removeGitRepo()
-            .then(cloneGitRepo);
-    }
+    logger.debug('start : ', analysisTarget.id, analysisTarget.status);
 
-    return findProject(branch)
-        .then(function (prj) {
-            project = prj;
-            return project.ownerUid;
-        }).then(getFsinfo)
-        .then(function (result) {
-            return result[0].wfsId;
-        })
-        .then(function (fsid) {
-            jsaGit = new JsaGit(fsid, analysis.aid);
-            return jsaGit.isGitRepo();
-        })
-        .then(function (isGitRepo) {
-            if (isGitRepo) {
-                return updateGitRepo();
+    fs.stat(analysisTarget.path, function (err, stats) {
+        if (err) {
+            logger.error('start : ', err);
+            doneCallback('start failed');
+        } else {
+            if (stats.isDirectory() === true) {
+                pendingList.push(analysisTarget);
+                analyzePendingTarget();
             } else {
-                if (commitId) {
-                    return cloneGitRepo().then(checkoutGitRepo);
-                } else {
-                    return cloneGitRepo();
+                logger.error('start : ', analysisTarget.path + ' is not a file');
+                doneCallback(analysisTarget.path + ' is not a file');
+            }
+        }
+    });
+
+    return analysisTarget.id;
+}
+
+/**
+ * @callback startCallback
+ *
+ * @param {string|null} error - 에러 문자열
+ * @param {object|null} analysisResult - 분석 결과 객체
+ * @param {string} analysisResult.id 분석 ID
+ * @param {string} analysisResult.status 분석 상태. STATUS_ANALYZING | STATUS_SUCCESS | STATUS_PENDING | STATUS_FAIL | STATUS_TIMEOUT | STATUS_STOP
+ * @param {string} analysisResult.path 분석하려는 파일 패스
+ * @param {array} analysisResult.alarms 검출한 알람
+ */
+
+
+/**
+ * Stop analysis.
+ *
+ * @param {array} pageList - 멈추고자 하는 분석의 {페이지 ID : 내부 분석 ID} 쌍으로된 리스트
+ */
+function stop(targetId) {
+    var i;
+    var analysisTarget;
+    var removedTargetIds = [];
+
+    //대기중인 모든 분석 중 정지하려는 분석을 제거
+    for (i = 0; i < pendingList.length; i++) {
+        if (pendingList[i].id === targetId) {
+            analysisTarget = pendingList[i];
+            pendingList.splice(i, 1);
+            analysisTarget.status = Constants.LITE_STATUS_STOP;
+            finishingAnalysis(analysisTarget);
+            removedTargetIds.push(targetId);
+            logger.debug('stop : pending target removed', analysisTarget.id);
+            break;
+        }
+    }
+
+    // 분석중인 프로세스 중 정지하려는 분석의 프로세스를 kill
+    var analyzingProcess = null;
+    for (i = 0; i < analyzingList.length; i++) {
+        if (analyzingList[i].id === targetId) {
+            analyzingList[i].status = Constants.LITE_STATUS_STOP;
+            analyzingProcess = analyzingList[i].process;
+            if (analyzingProcess) {
+                try {
+                    process.kill(-analyzingProcess.pid);
+                    // process.on :'close'가 호출되고 status는 status_stop 상태가 됨
+                } catch (e) {
+                    logger.debug('process ', analyzingProcess.pid, ' was not exists');
                 }
             }
-        })
-        .then(function () {
-            return jsaGit;
-        })
-        .catch(function (error) {
-            throw new JsaError(error);
-        });
-}
-
-/**
- * analysis 의 source를 다운로드
- *  analysis의 ownerPid를 통해 project 객체를 얻어옴
- *  project 객체의 sourceType이 Web이면 crawlSource, Git이면 git clone/pull 함
- *
- * @param {object} analysisInfo - 분석 객체 및 분석 옵션 정보를 담은 객체
- * @return {object} promise - 성공 시 analysis 객체, 실패 시 error 메시지를 전달
- */
-function fetchSource(analysisInfo) {
-    logger.debug('fetch source of analysis ' + analysisInfo.analysis.aid);
-    var branchId = analysisInfo.analysis.ownerBid;
-    var targetPath = analysisInfo.analysis.fsPath;
-
-    return dbLiteBranch.$findOneAsync({
-        bid: branchId
-    }).then(function (context) {
-        var row = context.result();
-        if (row) {
-            return row;
-        } else {
-            throw new JsaError('Cannot find branch ' + branchId);
+            break;
         }
-    }).then(function (branch) {
-        // fetchGitSource() 실행
-        return fetchGitSource(branch, analysisInfo)
-            .then(function (jsaGit) {
-                return jsaGit.getCommitId();
-            }).then(function (commitId) {
-                logger.debug('[git commitId]', commitId);
-                analysisInfo.analysis.gitCommitId = commitId;
-                return updateAnalysisInfo(analysisInfo.analysis.aid, {gitCommitId: commitId});
-            });
-    }).then(function () {
-        return analysisInfo;
-    }).catch(function (error) {
-        //소스 다운로드 실패시 analysis DB에 분석 실패 기록
-        var updateInfo = {
-            startTime: Date.now(),
-            endTime: Date.now(),
-            status: constants.LITE_STATUS_FAIL
-        };
-        logger.error('fetchSource fail : ', error);
-        return updateAnalysisInfo(analysisInfo.analysis.aid, updateInfo);
-    });
-}
-
-/**
- * 모든 defect를 받아 new, triaged를 가려낸 후, impact의 수와 loc의 비율에 따라 등급을 계산 후 branch DB에 update
- * @param {array} allDefects - 모든 defects
- * @param {object} analysis - analysis info
- */
-function updateGrade(allDefects, analysis) {
-    var defects = _.filter(allDefects, function (defect) {
-        return defect.status === constants.LITE_DEFECT_STATUS_NEW || defect.status === constants.LITE_DEFECT_STATUS_TRIAGED;
-    });
-
-    // get LOC
-    var fileSizeArr = _.map(analysis.files, function (file) { return parseInt(file.loc); });
-    var loc = _.reduce(fileSizeArr, function (memo, size) { return (memo + size); }, 0);
-
-    var grade = gradeComputer.compute(defects, loc);
-
-    //test badge
-    var badge = require('gh-badges');
-    badge({ text: [ "build", grade ], colorscheme: "green", template: "flat" },
-          function(svg) {
-        // svg is a String… of your badge.
-        logger.debug(' badge: ', svg);
-    });
-
-    // update branch DB
-    var branchId = analysis.ownerBid;
-    return dbLiteBranch.$updateAsync({
-        bid: branchId,
-        $set: {
-            grade: grade
-        }
-    });
-}
-
-function updateDefectsAfterMerging(defects) {
-    return Promise.map(defects, function (defect) {
-        if (!defect.did) {
-            // new Defect
-            return dbLiteDefect.$saveAsync(defect)
-                .then(function (context) {
-                    var row = context.result();
-                    var did = row.insertId;
-                    // alarm의 owner_did 업데이트
-                    return Promise.map(defect.alarmIds, function (alarmId) {
-                        return dbLiteAlarm.$updateAsync({
-                            alarmId: alarmId,
-                            $set: {
-                                ownerDid: did
-                            }
-                        });
-                    });
-                });
-        } else {
-            // prev Defect
-            return dbLiteDefect.$updateAsync({
-                did: defect.did,
-                $set: defect
-            }).then(function () {
-                if (defect.alarmIds) {
-                    // alarm의 owner_did 업데이트
-                    return Promise.map(defect.alarmIds, function (alarmId) {
-                        return dbLiteAlarm.$updateAsync({
-                            alarmId: alarmId,
-                            $set: {
-                                ownerDid: defect.did
-                            }
-                        });
-                    });
-                } else {
-                    return null;
-                }
-            });
-        }
-    });
-}
-
-
-/**
- * 분석 시작 함수
- */
-function startEngine(analysisInfo) {
-    logger.debug('start engine of analysis' + analysisInfo.analysis.aid);
-
-    var analysis = analysisInfo.analysis;
-    var projectSettings = analysisInfo.options.projectSettings;
-    var excludePatterns = projectSettings.rulePatternToExcludeFiles;
-    var notificationEmails = projectSettings.notificationEmails ? projectSettings.notificationEmails.split(/[\s]+/) : null;
-
-    var engineOptions = {};
-    engineOptions[engineMgr.Options.RULES] = analysisInfo.options.enabledRuleNames;
-    engineOptions[engineMgr.Options.BROWSERS] = projectSettings.browserCompats;
-
-
-    engineIdMap[analysis.aid] = engineMgr.start(analysis.fsPath, engineOptions, function (status) {
-        // lite 분석 시작 콜백
-        logger.debug('start analyzing ' + analysis.aid);
-        updateAnalysisInfo(analysis.aid, {status: status});
-    }, function (err, engineResult) {
-        // 분석 종료 콜백
-        var alarms = null;
-        var updateInfo = {
-            startTime: engineResult ? engineResult.startTime : Date.now(),
-            endTime: Date.now(),
-            status: engineResult ? engineResult.status : constants.LITE_STATUS_FAIL,
-            files: engineResult ? engineResult.files : []
-        };
-        if (err) {
-            // FAIL, TIMEOUT, STOP, ERROR
-            logger.warn(err, '[Analysis of ' + analysis.aid + ' fail!]');
-        } else {
-            // SUCCESS
-            logger.debug('[Analysis of ' + analysis.aid + ' success!]');
-            logger.debug('[analyzed files]', engineResult.files);
-            alarms = _.map(engineResult.alarms, function (engineAlarm) {
-                var absolutePath = path.normalize(path.join(engineResult.path, engineAlarm.filePath));
-                var fsPath = path.relative(analysis.fsPath, absolutePath);
-                var alarm = {};
-                alarm.ownerAid = analysis.aid;
-                alarm.impact = engineAlarm.impact;
-                alarm.name = engineAlarm.name;
-                alarm.message = engineAlarm.message;
-                alarm.fsPath = fsPath;
-                alarm.path = decodeURIComponent(fsPath);
-                alarm.location = engineAlarm.location;
-                alarm.codeFragment = engineAlarm.codeFragment;
-                alarm.codeFragmentLocation = JSON.stringify(engineAlarm.codeFragmentLocation);
-                return alarm;
-            });
-            analysis.status = engineResult.status;
-            analysis.files = engineResult.files;
-        }
-
-        return updateAnalysisInfo(analysis.aid, updateInfo)
-            .then(function () {
-                // 분석 성공 시
-                if (engineResult.status === constants.LITE_STATUS_SUCCESS) {
-                    logger.debug('[newly detected alarms size]', alarms.length);
-
-                    // 1. DB alarm 추가
-                    return Promise.map(alarms, function (alarm) {
-                        return dbLiteAlarm.$saveAsync(alarm)
-                            .then(function (context) {
-                                var row = context.result();
-                                alarm.alarmId = row.insertId;
-                                return alarm;
-                            });
-                    })
-
-                    // 2. 검출된 alarms 와 기존 defects 머지
-                    .then(function (alarms) {
-                        logger.debug('save successfully for alarms of analysis ' + analysis.aid);
-                        return hDefectMerger.mergeAlarms(analysis, alarms)
-                            .then(function (defects) {
-                                logger.debug('[total merged defects size]', defects.length);
-
-                                // excluded 업데이트
-                                var noRuleNames = analysisInfo.options.disabledRuleNames;
-                                defects = defectExcluder.exclude(defects, noRuleNames, excludePatterns);
-
-                                // 최종 defects DB에 업데이트
-                                return updateDefectsAfterMerging(defects)
-                                    .then(function () {
-                                    // grade 계산 및 brranch DB에 업데이트
-                                        return updateGrade(defects, analysis);
-                                    });
-                            });
-                    })
-
-                    // 3. analysis에 Defect count 업데이트 및 엔진 Id 삭제
-                    .then(function () {
-                        logger.debug('update successfully for defects of analysis ' + analysis.aid);
-                        delete engineIdMap[analysis.aid];
-
-                        return hDefectMerger.getBranchDefects(analysis.ownerBid).then(function (defects) {
-                            var noExcludedDefects = _.filter(defects, function (defect) {
-                                return defect.status !== constants.LITE_DEFECT_STATUS_EXCLUDED;
-                            });
-                            var outstandingDefects = _.filter(noExcludedDefects, function (defect) {
-                                return defect.status === constants.LITE_DEFECT_STATUS_NEW || defect.status === constants.LITE_DEFECT_STATUS_TRIAGED;
-                            });
-
-                            var updateInfo = {
-                                totalDefectCount: noExcludedDefects.length,
-                                outstandingDefectCount: outstandingDefects.length
-                            };
-                            return updateAnalysisInfo(analysis.aid, updateInfo)
-                                .then(function () {
-                                    return outstandingDefects;
-                                });
-                            });
-                    })
-
-                    // 4. 분석 성공 메일 전송
-                    .then(function (outstandingDefects) {
-                        logger.debug('[notificationEmails]', notificationEmails);
-                        jsaReporter.sendReport(null, analysis, outstandingDefects, notificationEmails);
-                        return Promise.resolve();
-                    })
-                } else {
-                    // 분석 실패 메일 전송
-                    var err = 'All analysis of files are failed.';
-                    jsaReporter.sendReport(err, analysis, null, notificationEmails);
-                    return Promise.reject(err);
-                }
-            });
-    });
-}
-
-var analyzer = {
-    /**
-     * 분석 시작
-     *  analysisId를 통해 analysis 객체를 얻어옴
-     *  소스 크롤링
-     *  engineMgr의 start 호출 및 프로젝트가 가지는 engineIdMap필드로 분석중인 객체 리스트를 관리
-     *
-     * @param {string} aid - 분석 ID
-     * @param {string|undefined} commitId - 특정 commit ID
-     */
-    start: function (aid, commitId) {
-        logger.debug('start analysis: ', aid);
-        return findAnalysis(aid)
-            .then(getOptions)
-            .then(function (analysisInfo) {
-                analysisInfo.commitId = commitId;
-                return analysisInfo;
-            })
-            .then(fetchSource)
-            .then(startEngine);
-    },
-
-    /**
-     * 특정 분석 다시 시작
-     *  1. 크롤링이 완료되지 않은 분석이라면 다시 크롤링 후 분석
-     *  2. 크롤링이 완료어 분석중이었던 분석이라면 페이지 리셋 후 분석
-     *
-     * @param {string} aid - 분석 ID
-     */
-    resume: function (aid) {
-        logger.debug('restart analysis: ', aid);
-        var self = this;
-        return findAnalysis(aid)
-            .then(function (analysis) {
-                // 1. 'pending': 분석 대기중인 상태
-                if (analysis.status === constant.LITE_STATUS_PENDING) {
-                    // git fetch 후 분석
-                    return self.start(aid);
-
-                // 2. 'analyzing': 분석중이었던 상태
-                } else if (analysis.status === constant.LITE_STATUS_ANALYZING) {
-                    logger.debug('reset analysis', analysis.aid);
-                    //  하위 알람 정보들 삭제 후 다시 분석 시작
-                    return dbLiteAlarm.deleteAlarmsByAidAsync({ownerAid: analysis.aid})
-                        .then(function () {
-                            return getOptions(analysis).then(startEngine);
-                        });
-                }
-            });
-    },
-
-    /**
-     * 진행중 또는 대기중인 분석을 중단
-     *
-     * @param {string} aid - 분석 ID
-     */
-    stop: function (aid) {
-        logger.debug('stop analysis: ', aid);
-        if (engineIdMap.hasOwnProperty(aid)) {
-            engineMgr.stop(engineIdMap[aid]);
-            delete engineIdMap[aid];
-        }
-    },
-
-    /**
-     * 프로젝트의 분석 상태를 획득
-     *  분석이 진행중인 프로젝트에 대해서는 engineMgr에 최신 상태 요청 후 업데이트&리턴
-     *
-     * @param {string} aid - 분석 ID
-     * 분석 상태 문자열 - 'analyzing': 분석 중
-     *                  'success': 분석 성공
-     *                  'fail': 분석 실패
-     *                  'pending': 분석 대기 중
-     */
-    getStatus: function (aid) {
-        return findAnalysis(aid).then(function (analysis) {
-            return analysis.status;
-        });
-    },
-
-    /**
-     * Gets a engine information
-
-     * @returns {object} Promise resolves an engine information, rejects error message.
-     */
-    getEngineInfo: function () {
-        return engineMgr.getEngineInfo();
     }
-};
-
-// 분석이 완료되지 않은 analysis들을 DB로부터 찾아서 분석 재시작
-function restartNotCompletedAnalyses() {
-    dbLiteAnalysis.getAnalysesInProgressOfAllBranchesAsync({})
-        .then(function (context) {
-            var analyses = context.result();
-            return Promise.map(analyses, function (analysis) {
-                return analyzer.resume(analysis.aid);
-            });
-        }).catch(function (err) {
-            logger.error(err);
-        });
 }
 
-// CI를 통해 서버 시작 시 테스트 분석이 먼저 수행되어야하는 경우가 있기때문에 conf의 reanalyzingDelay 사용
-var delay = conf.services.jsa.reanalyzingDelay || 0;
-setTimeout(restartNotCompletedAnalyses, delay);
+function getStatus(targetId) {
+    var i;
 
+    var pendingLength = pendingList.length;
+    for (i = 0; i < pendingLength; i++) {
+        if (pendingList[i].id === targetId) {
+            logger.debug('getStatus : ', Constants.LITE_STATUS_PENDING);
+            return Constants.LITE_STATUS_PENDING;
+        }
+    }
 
-module.exports = analyzer;
+    var analyzingLength = analyzingList.length;
+    for (i = 0; i < analyzingLength; i++) {
+        if (analyzingList[i].id === targetId) {
+            logger.debug('getStatus : ', Constants.LITE_STATUS_ANALYZING);
+            return Constants.LITE_STATUS_ANALYZING;
+        }
+    }
+
+    return null;
+}
+
+function stopAllAnalyses() {
+    var length = analyzingProcessIds.length;
+    for (var i = 0; i < length; i++) {
+        var pid = analyzingProcessIds[i];
+        try {
+            process.kill(-pid);
+        } catch (e) {
+            logger.debug('process ', pid, ' was not exists');
+        }
+    }
+    analyzingProcessIds = [];
+}
+/**
+ * Gets an engine information
+ *
+ * @returns {object} Promise resolves an engine information, rejects error message.
+ */
+function getEngineInfo() {
+    return new Promise(function (resolve, reject) {
+        var spawn = require('child_process').spawn;
+        var bugda = spawn('bugda', ['-v']);
+        var stdout = '';
+        var isFailed = false;
+
+        readline.createInterface({
+            input: bugda.stdout,
+            terminal: true
+        }).on('line', function (linedLog) {
+            logger.debug('linedLog', linedLog);
+            stdout += linedLog + '\n';
+        });
+
+        bugda.on('close', function (code, signal) {
+            if (isFailed || !stdout) {
+                reject('failed to get engine information.');
+            } else {
+                // stdout: JavaScript Analyzer version 0.2.0\nCopyright (c) 2016 S-Core, Ltd.\nAll rights reserved.
+                logger.debug('[engine information]', stdout);
+                var data = stdout.split('\n')[0].split(' version ');
+                var engineInfo = {
+                    name: data[0],
+                    version: data[1]
+                };
+
+                resolve(engineInfo);
+            }
+        });
+
+        bugda.on('error', function (err) {
+            logger.error('error occurred while getting engine information.', err);
+            isFailed = true;
+        });
+
+        bugda.on('disconnect', function () {
+            logger.error('process disconnected while getting engine information.');
+        });
+    });
+}
+
+exports.start = start;
+exports.stop = stop;
+exports.getStatus = getStatus;
+exports.Options = Options;
+exports.stopAllAnalyses = stopAllAnalyses;
+exports.getEngineInfo = getEngineInfo;
