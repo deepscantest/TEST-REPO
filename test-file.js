@@ -511,9 +511,8 @@ function startEngine(analysisInfo) {
                 alarm.codeFragmentLocation = JSON.stringify(engineAlarm.codeFragmentLocation);
                 return alarm;
             });
-            analysis.totalLines = engineResult.totalLines;
-            analysis.loc = engineResult.loc;
             analysis.status = engineResult.status;
+            analysis.files = engineResult.files;
         }
 
         return updateAnalysisInfo(analysis.aid, updateInfo)
