@@ -392,7 +392,7 @@ function updateGrade(allDefects, analysis) {
     logger.debug('$$$$$$$$$ analysis: ' , analysis);
     // get LOC
     var fileSizeArr = _.map(analysis.files, function (file) {
-        return file.loc;
+        return parseInt(file.loc);
     });
     logger.debug(' file size arr: ' + fileSizeArr);
     
