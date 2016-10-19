@@ -71,20 +71,20 @@ var ratingComputer = {
             }
         });
     },
-    
+
     compute: function (defects, loc) {
         // 분석된 내용이 없으면 empty string을 반환
         if (!loc) {
             return '';
         }
-        
+
         var rating = '';
         var impactCount = this._getImpactCount(defects);
 
         var highDensity = this._density(impactCount.High, loc);
         var mediumDensity = this._density(impactCount.Medium, loc);
         var lowDensity = this._density(impactCount.Low, loc);
-        
+
         if (highDensity >= this.level.poor.high_medium_impact_threshold || mediumDensity >= this.level.poor.high_medium_impact_threshold || lowDensity >= this.level.poor.low_impact_threshold) {
             rating = this.level.poor.name;
         }else {
@@ -94,7 +94,7 @@ var ratingComputer = {
                 rating = this.level.normal.name;
             }
         }
-        
+
         logger.debug('lines of code: ', loc);
         logger.debug('density - high: ', highDensity, '    medium: ', mediumDensity, '    low: ', lowDensity);
         logger.debug('Computed rating', rating);
@@ -379,7 +379,7 @@ function fetchSource(analysisInfo) {
 }
 
 /**
- * 모든 defect를 받아 status가 new, triaged인 defects 만을 가려낸 후, impact에 따라 등급을 계산 후 branch DB에 update
+ * 모든 defect를 받아 new, triaged를 가려낸 후, impact의 수와 loc의 비율에 따라 등급을 계산 후 branch DB에 update
  * @param {array} allDefects - 모든 defects
  * @param {object} analysis - analysis info
  */
@@ -388,19 +388,25 @@ function updateGrade(allDefects, analysis) {
         return defect.status === constants.LITE_DEFECT_STATUS_NEW || defect.status === constants.LITE_DEFECT_STATUS_TRIAGED;
     });
 
-    // get grade 
-    var rating = ratingComputer.compute(defects, analysis.loc);
+    // get LOC
+    var fileSizeArr = _.map(analysis.files, function (file) {
+        return file.loc;
+    });
+    var loc = _.reduce(fileSizeArr, function (memo, size) {
+        return memo + size
+    }, 0);
     
+    var rating = ratingComputer.compute(defects, loc);
+
     // update branch DB
     var branchId = analysis.ownerBid;
-    dbLiteBranch.$updateAsync({
+    return dbLiteBranch.$updateAsync({
         bid: branchId,
-        $set: { 
+        $set: {
             grade: rating
         }
     }).then(function (context) {
             logger.debug('Grade of branch ', branchId, ' has been updated to ', rating);
-            return;
     }).catch(function (error) {
         throw new JsaError(error);
     });
@@ -532,10 +538,12 @@ function startEngine(analysisInfo) {
                                 var noRuleNames = analysisInfo.options.disabledRuleNames;
                                 defects = defectExcluder.exclude(defects, noRuleNames, excludePatterns);
 
-                                updateGrade(defects, analysis);
-
                                 // 최종 defects DB에 업데이트
-                                return updateDefectsAfterMerging(defects);
+                                return updateDefectsAfterMerging(defects)
+                                    .then(function () {
+                                        // grade update
+                                        return updateGrade(defects, analysis);
+                                    });
                             });
                     })
 
