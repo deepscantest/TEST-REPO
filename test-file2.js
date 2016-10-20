@@ -411,34 +411,21 @@ function updateGrade(allDefects, analysis) {
    * @param {object} analysis - analysis info
  */
 function createBadge(analysis) {
-    return new Promise(function (resolve, reject) {
         var fsPath = analysis.fsPath;
-        var badgeDir = fsPath + path.join('/', 'badge');
-        fs.ensureDir(badgeDir, function (err) {
-            if (err) {
-                logger.debug('create dir failed: ', badgeDir);
-                reject(err);
-            } else {
-                logger.debug('create dir success: ', badgeDir);
-                resolve();
-            }
-        }).then(function () {
-            return getBadgeSvg(analysis.grade).then(function (svg) {
-                var filePath = badgeDir + path.join('/', 'grade.svg');
-                return new Promise(function (resolve, reject) {
-                    fs.outputFile(filePath, svg, function (err) {
-                        if (err) {
-                            logger.debug('file create failed: ', filePath);
-                            reject(err);
-                        } else {
-                            logger.debug('file create success: ', filePath);
-                            resolve();
-                        }
-                    });
+        return getBadgeSvg(analysis.grade).then(function (svg) {
+            var filePath = fsPath + path.join('/', 'badge', 'grade.svg');
+            return new Promise(function (resolve, reject) {
+                fs.outputFile(filePath, svg, function (err) {
+                    if (err) {
+                        logger.debug('file create failed: ', filePath);
+                        reject(err);
+                    } else {
+                        logger.debug('file create success: ', filePath);
+                        resolve();
+                    }
                 });
             });
         });
-    });
 }
 
 function getBadgeSvg(grade) {
