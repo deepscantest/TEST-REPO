@@ -413,7 +413,7 @@ function updateGrade(allDefects, analysis) {
 function createBadge(analysis) {
     return new Promise(function (resolve, reject) {
         var fsPath = analysis.fsPath;
-        badgeDir = fsPath + path.join('/', 'badge');
+        var badgeDir = fsPath + path.join('/', 'badge');
         fs.ensureDir(badgeDir, function (err) {
             if (err) {
                 logger.debug('create dir failed: ', badgeDir);
