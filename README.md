@@ -1,5 +1,5 @@
 ### Well hello there!8888 + 1113aa2223423
-[![DeepScan Grade](http://172.21.110.242:5012/api/projects/41/branches/22/badge/grade.svg)](http://172.21.110.242:5001/lite/#view=project&pid=41&bid=22)
+[![DeepScan Grade](http://a6ef19b5.ngrok.io/api/projects/41/branches/22/badge/grade.svg)](http://a6ef19b5.ngrok.io/lite/#view=project&pid=41&bid=22)
 
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/485fc5685be5432da604bad37772854d)](https://www.codacy.com/app/esil7153/TEST-REPO?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=casval/TEST-REPO&amp;utm_campaign=Badge_Grade)
 
