@@ -1,5 +1,6 @@
 ### Well hello there!8888 + 1113aa2223423
 [![DeepScan Grade](http://a5811e54.ngrok.io/api/projects/283/branches/212/badge/grade.svg)](http://a5811e54.ngrok.io/lite/#view=project&pid=283&bid=212)
+
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/485fc5685be5432da604bad37772854d)](https://www.codacy.com/app/esil7153/TEST-REPO?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=casval/TEST-REPO&amp;utm_campaign=Badge_Grade)
 
 [![bitHound Code](https://www.bithound.io/github/casval/TEST-REPO/badges/code.svg)](https://www.bithound.io/github/casval/TEST-REPO)
@@ -15,4 +16,3 @@ After forking this repository, you can make some changes to the project, and sub
 For some more information on how to fork a repository, [check out our guide, "Forking Projects""](http://guides.github.com/overviews/forking/). Thanks! :sparkling_heart:
 sasadf
 
-[![Deepscan grade](http://172.21.110.242:5012/api/projects/1/branches/1/badge/grade.svg)](http://172.21.110.242:5001/lite/index.html#view=project&pid=1&bid=1&subview=overview")
