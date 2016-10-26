@@ -4,7 +4,7 @@
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/485fc5685be5432da604bad37772854d)](https://www.codacy.com/app/esil7153/TEST-REPO?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=casval/TEST-REPO&amp;utm_campaign=Badge_Grade)
 
 [![bitHound Code](https://www.bithound.io/github/casval/TEST-REPO/badges/code.svg)](https://www.bithound.io/github/casval/TEST-REPO)
-
+[![bitHound Overall Score](https://www.bithound.io/github/casval/TEST-REPO/badges/score.svg)](https://www.bithound.io/github/casval/TEST-REPO)
 <a href="https://codeclimate.com/github/casval/TEST-REPO"><img src="https://codeclimate.com/github/casval/TEST-REPO/badges/issue_count.svg" /></a>
 
 This repository is meant to provide an example for *forking* a repository on GitHub.
